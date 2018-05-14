@@ -1,5 +1,28 @@
 var $ = $ || jQuery;
 
+!function (n, t) {
+    var o, u = n.jQuery || n.Cowboy || (n.Cowboy = {});
+    u.throttle = o = function (n, o, e, i) {
+        var r, a = 0;
+
+        function c() {
+            var u = this, c = +new Date - a, f = arguments;
+
+            function d() {
+                a = +new Date, e.apply(u, f)
+            }
+
+            i && !r && d(), r && clearTimeout(r), i === t && c > n ? d() : !0 !== o && (r = setTimeout(i ? function () {
+                r = t
+            } : d, i === t ? n - c : n))
+        }
+
+        return "boolean" != typeof o && (i = e, e = o, o = t), u.guid && (c.guid = e.guid = e.guid || u.guid++), c
+    }, u.debounce = function (n, u, e) {
+        return e === t ? o(n, u, !1) : o(n, e, !1 !== u)
+    }
+}(window);
+
 (function ($) {
     var o = $({});
     $.subscribe = function () {
@@ -13,6 +36,40 @@ var $ = $ || jQuery;
     };
 
 }(jQuery));
+
+(function ($) {
+    function visible(element) {
+        return $.expr.filters.visible(element) && !$(element).parents().addBack().filter(function () {
+            return $.css(this, 'visibility') === 'hidden';
+        }).length;
+    }
+
+    function focusable(element, isTabIndexNotNaN) {
+        var map, mapName, img, nodeName = element.nodeName.toLowerCase();
+        if ('area' === nodeName) {
+            map = element.parentNode;
+            mapName = map.name;
+            if (!element.href || !mapName || map.nodeName.toLowerCase() !== 'map') {
+                return false;
+            }
+            img = $('img[usemap=#' + mapName + ']')[0];
+            return !!img && visible(img);
+        }
+        return (/input|select|textarea|button|object/.test(nodeName) ?
+            !element.disabled :
+            'a' === nodeName ?
+                element.href || isTabIndexNotNaN :
+                isTabIndexNotNaN) &&
+            // the element and all of its ancestors must be visible
+            visible(element);
+    }
+
+    $.extend($.expr[':'], {
+        focusable: function (element) {
+            return focusable(element, !isNaN($.attr(element, 'tabindex')));
+        }
+    });
+})(jQuery);
 
 function stopEv(e) {
     e.stopPropagation();
@@ -75,7 +132,47 @@ function Selector() {
 }
 
 function Model(model) {
+    var _this = this;
     this.model = model;
+
+    function toggleDeleteStateNode(node, value) {
+        if (value == false) {
+            node.value = '';
+            node.isDeleted = true;
+        }
+        if (value == true) {
+            node.isDeleted = false;
+        }
+    }
+
+    function getSelectLimit(groupName) {
+        return _this.model[groupName].limit
+    }
+
+
+    function isSelectLimitValid(action, node, value, groupName) {
+        var data = _this.selectedModel[groupName];
+        var limitValue = _this.model[groupName].limit;
+
+        if (action == 'isSelectedAll') {
+            if (node.child.length >= limitValue) {
+                return true;
+            }
+            if (data) {
+                if (data.outputDataFiltered.length >= limitValue) {
+                    return true;
+                }
+                if ((data.outputDataFiltered.length + node.child.length) > limitValue) {
+                    return true;
+                }
+            }
+        }
+        if (action == 'isSelected') {
+            if (data && data.outputDataFiltered.length >= limitValue) {
+                return true;
+            }
+        }
+    }
 
     this.modelIteration = function (model, group, callback) {
         group.forEach(function (groupName) {
@@ -118,19 +215,24 @@ function Model(model) {
             parent.isSelectedAll = false;
         }
 
+        toggleDeleteStateNode(parent, value);
+
         if (parent.parent) {
             setValueToParentLinkNodes(parent.parent, value);
         }
     }
 
-    function setValueToChildLinkNodes(nodes, value) {
+    function setValueToChildLinkNodes(nodes, value, groupName) {
         nodes.forEach(function (childNode) {
+
             childNode.isSelected = value;
+
+            toggleDeleteStateNode(childNode, value);
 
             if (childNode.child) {
                 childNode.isSelectedAll = value;
                 childNode.isCollapsed = false;
-                setValueToChildLinkNodes(childNode.child, value);
+                setValueToChildLinkNodes(childNode.child, value, groupName);
             }
 
             if (childNode.parent) {
@@ -139,20 +241,40 @@ function Model(model) {
         });
     }
 
-    this.updateNode = function (node, action, value) {
+    this.updateNode = function (node, action, value, groupName) {
+
 
         if (action == 'isSelectedAll') {
+
+            if (value && isSelectLimitValid(action, node, value, groupName)) {
+                alert('You are allowed up to 5 selections.');
+
+                node.isCollapsed = false;
+                $.publish('updatedModel', this.model);
+                return
+            }
+
             node.isSelectedAll = value;
             node.isSelected = value;
             node.isCollapsed = false;
 
-            setValueToChildLinkNodes(node.child, value);
+            toggleDeleteStateNode(node, value);
+            setValueToChildLinkNodes(node.child, value, groupName);
         }
         if (action == 'isCollapsed') {
             node.isCollapsed = value;
         }
         if (action == 'isSelected') {
+
+
+            if (value && isSelectLimitValid(action, node, value, groupName)) {
+                alert('You are allowed up to 5 selections.');
+                return
+            }
+
             node.isSelected = value;
+
+            toggleDeleteStateNode(node, value);
 
             if (node.parent) {
                 setValueToParentLinkNodes(node.parent, value);
@@ -160,7 +282,78 @@ function Model(model) {
         }
 
         $.publish('updatedModel', this.model);
-    }
+    };
+
+    this.removeSelectedItem = function (data) {
+        _this.modelIteration(_this, [data.group], function iteration(node, groupName) {
+            node.child && node.child.forEach(function (subNode) {
+                iteration(subNode, groupName)
+            });
+            if (node.id == data.id) {
+                node.isSelected = false;
+
+                toggleDeleteStateNode(node, false);
+
+                if (node.parent) {
+                    setValueToParentLinkNodes(node.parent, false);
+                }
+                if (node.child) {
+                    setValueToChildLinkNodes(node.child, false, groupName);
+                }
+            }
+        });
+        $.publish('updatedModel', this.model);
+    };
+
+    this.setInputValue = function (data) {
+        _this.modelIteration(_this, [data.group], function iteration(node, groupName) {
+            node.child && node.child.forEach(function (subNode) {
+                iteration(subNode, groupName)
+            });
+
+            if (node.id == data.id) {
+                node.value = data.value;
+                node.isDeleted = false;
+            }
+        });
+        $.publish('updatedModel', this.model);
+    };
+
+    this.itemIsDeleted = function (data) {
+        _this.modelIteration(_this, [data.group], function iteration(node, groupName) {
+            node.child && node.child.forEach(function (subNode) {
+                iteration(subNode, groupName)
+            });
+            if (node.id == data.id) {
+                node.isDeleted = false;
+            }
+        });
+    };
+
+
+    this.setOtherValue = function (data) {
+        _this.modelIteration(_this, [data.group], function iteration(node, groupName) {
+            node.child && node.child.forEach(function (subNode) {
+                iteration(subNode, groupName)
+            });
+
+            if (node.id == data.id) {
+
+                if (isSelectLimitValid('isSelected', node, true, groupName)) {
+                    alert('You are allowed up to 5 selections.');
+                    return;
+                }
+
+                node.title = data.title;
+                node.isSelected = true;
+            }
+        });
+        $.publish('updatedModel', this.model);
+    };
+
+
+    this.selectedModel = {};
+    this.deletedModel = {};
 }
 
 Model.initModel = function initModel($formGroupArray) {
@@ -181,10 +374,11 @@ Model.initModel = function initModel($formGroupArray) {
             var data = {};
             var findChild = $(el).find('> ul');
             var A = $(el).find('> a');
-            var filter = A.data('filter-type');
+            var filter = A.data('output-filter-type');
+
             data = {
                 id: A.data('id'),
-                text: A.text(),
+                title: A.text(),
                 link: new Link(A),
                 isSelected: false,
             };
@@ -215,9 +409,9 @@ Model.initModel = function initModel($formGroupArray) {
 
         Model[groupName].nodes.push({}['child'] = getUlChild($(el).find('> li')));
 
-        //  $(el).data('form-group-output-id'));  =  name will use for find output container
+        //  $(el).data('form-group'));  =  name will use for find output container
         // data-form-group-output="formfield-coverages"
-        !Model[groupName].outputId && (Model[groupName].outputId = $(el).data('form-group-output-id'));
+        !Model[groupName].outputId && (Model[groupName].outputId = $(el).data('form-group'));
 
         // if limit set, user will get a message
         // todo add custom message template
@@ -236,10 +430,13 @@ function DOM(model, group) {
         _this.render(model);
     });
 
+    console.log(this.model);
 
     function init(model, group) {
         _this.model.modelIteration(model, group, function iteration(node, groupName) {
-            node.child && node.child.forEach(iteration);
+            node.child && node.child.forEach(function (subNode) {
+                iteration(subNode, groupName)
+            });
 
             if (node.hasOwnProperty('isCollapsed') && !node.selector) {
                 var selector = new Selector();
@@ -248,15 +445,15 @@ function DOM(model, group) {
 
                 node.selector.$el.click(function (e) {
                     e.stopPropagation();
-                    model.updateNode(node, 'isSelectedAll', !node.isSelectedAll);
+                    model.updateNode(node, 'isSelectedAll', !node.isSelectedAll, groupName);
                 });
             }
 
             node.link.$el.click(function (e) {
                 if (node.child) {
-                    model.updateNode(node, 'isCollapsed', !node.isCollapsed);
+                    model.updateNode(node, 'isCollapsed', !node.isCollapsed, groupName);
                 } else {
-                    model.updateNode(node, 'isSelected', !node.isSelected);
+                    model.updateNode(node, 'isSelected', !node.isSelected, groupName);
                 }
             })
         })
@@ -265,7 +462,9 @@ function DOM(model, group) {
     this.render = function () {
         _this.model.modelIteration(this.model, this.group, function iteration(node, groupName) {
 
-            node.child && node.child.forEach(iteration);
+            node.child && node.child.forEach(function (subNode) {
+                iteration(subNode, groupName);
+            });
             if (node.hasOwnProperty('child')) {
                 node.isCollapsed ? node.list.hide() : node.list.show();
                 node.isSelectedAll ? node.selector.changeToDeselect() : node.selector.changeToSelect();
@@ -278,6 +477,21 @@ function DOM(model, group) {
     this.render();
 }
 
+function getTemplate(id, name, value, presentIsExist) {
+    return `<li data-id-output="${id}">
+                    <span>${name}</span>
+                    <input class="field-input" type="text" value="${value ? value : ''}"> ${presentIsExist ? '%' : '' } <i class="js-remove-item icon-remove"></i>
+                </li>`;
+}
+
+function getValue(value) {
+    return value ? value : '';
+}
+
+function setSelectorToInvalid($el) {
+    return $el.siblings('.dropdown-toggle')
+        .addClass('not-valid');
+}
 
 $(document).ready(function () {
     var model = new Model(Model.initModel($("[data-form-group]")));
@@ -290,104 +504,4 @@ $(document).ready(function () {
     }, []);
 
     new DOM(model, groups);
-
-
-    function getTemplate(id, name) {
-        return `<li data-percent="${name}" data-value="" data-string="${name}" data-id-output="${id}">
-            <span>${name}</span>
-            <input class="field-input" type="text"> % <i class="icon-remove"></i>
-         </li>`;
-    }
-
-
-    var newSelectedModel = {};
-    var oldSelectedModel = {};
-
-
-    $('[data-form-group-output]').hide();
-    $.subscribe('updatedModel', function (ev, modelData) {
-        newSelectedModel = {};
-
-        model.modelIteration(model, groups, function iteration(node, groupName) {
-            node.child && node.child.forEach(function (subNode) {
-                iteration(subNode, groupName)
-            });
-
-            if (node.child) {
-                return;
-            }
-
-            if (!newSelectedModel[groupName]) {
-                newSelectedModel[groupName] = {
-                    allOutputData: [],
-                    outputDataFiltered: []
-                };
-
-                newSelectedModel[groupName].limit = model.model[groupName].limit;
-                newSelectedModel[groupName].outputId = model.model[groupName].outputId;
-            }
-
-            if (node.isSelected) {
-                newSelectedModel[groupName].allOutputData.push({
-                    id: node.parent.id,
-                    text: node.parent.text
-                });
-
-                if (node.filterType) {
-                    if (node.filterType == 'useParent') {
-
-                        if (!newSelectedModel[groupName].outputDataFiltered.find(function (selectorNode) {
-                            return selectorNode.id == node.parent.id;
-                        })) {
-                            newSelectedModel[groupName].outputDataFiltered.push({
-                                id: node.parent.id,
-                                text: node.parent.text,
-                            });
-                        }
-
-                    } else if (node.filterType == 'skip') {
-                        console.log('skip id field', node.id);
-                    }
-                } else {
-                    if (!newSelectedModel[groupName].outputDataFiltered.find(function (selectorNode) {
-                        return selectorNode.id == node.id;
-                    })) {
-                        newSelectedModel[groupName].outputDataFiltered.push({
-                            id: node.id,
-                            text: node.text
-                        });
-                    }
-                }
-            }
-        });
-
-        for (var selectedItem in newSelectedModel) {
-            var outputContainer = $(`[data-form-group-output="${newSelectedModel[selectedItem].outputId}"]`);
-            if(!newSelectedModel[selectedItem].outputDataFiltered.length){
-                outputContainer.hide();
-                continue;
-            }
-            outputContainer.show();
-            newSelectedModel[selectedItem].outputDataFiltered.forEach(function (node) {
-                if (!outputContainer.find(`li[data-id-output="${node.id}"]`).length) {
-                    outputContainer.find('ul').append(getTemplate(node.id, node.text))
-                }
-            })
-        }
-    });
-
-
-    $('.selector').selectpicker();
-
-    $('#form-data-value').text(new Date().toISOString().replace(/T\d+:\d+:\d+\.\d+Z/, ''));
-
-    $(document).on('click', '.icon-remove', function (e){
-        $(this).parent('li').remove();
-    });
-
-    toastr.options.positionClass = "toast-top-center";
-    toastr.success('Have fun storming the castle!')
 });
-
-
-
